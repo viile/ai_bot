@@ -1,4 +1,7 @@
-use crate::models::{Bot, CreateBotInput, Group, GroupDetail, Message, UpdateBotInput};
+use crate::models::{
+    Bot, CreateBotInput, Group, GroupDetail, Message, UpdateBotInput, UpdateUserProfileInput,
+    UserProfile,
+};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
@@ -50,6 +53,13 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_bots_group ON bots(group_id);
             CREATE INDEX IF NOT EXISTS idx_messages_group_created
                 ON messages(group_id, created_at);
+            CREATE TABLE IF NOT EXISTS user_profile (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                nickname TEXT NOT NULL,
+                avatar TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO user_profile (id, nickname, avatar)
+                VALUES (1, '我', '#1e3a5f');
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -468,6 +478,133 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
         Ok(message)
+    }
+
+    pub fn get_message(&self, message_id: &str) -> Result<Option<Message>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, group_id, sender_type, sender_id, bot_id, nickname, avatar,
+                        content, created_at, status
+                 FROM messages WHERE id = ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![message_id], map_message_row)
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            Some(Ok(m)) => Ok(Some(m)),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Ok(None),
+        }
+    }
+
+    /// Mark a user message as recalled and delete bot replies that followed in this turn.
+    pub fn recall_user_message(
+        &self,
+        group_id: &str,
+        message_id: &str,
+    ) -> Result<(Message, Vec<String>), String> {
+        let msg = self
+            .get_message(message_id)?
+            .ok_or_else(|| "消息不存在".to_string())?;
+        if msg.group_id != group_id {
+            return Err("消息不存在".into());
+        }
+        if msg.sender_type != "user" {
+            return Err("只能撤回自己的消息".into());
+        }
+        if msg.status == "recalled" {
+            return Ok((msg, vec![]));
+        }
+
+        self.conn
+            .execute(
+                "UPDATE messages SET status = 'recalled', content = '' WHERE id = ?1",
+                params![message_id],
+            )
+            .map_err(|e| e.to_string())?;
+
+        // Collect messages after this one until the next user message.
+        let all = self.list_messages(group_id, 500)?;
+        let mut removing = Vec::new();
+        let mut after = false;
+        for m in &all {
+            if m.id == message_id {
+                after = true;
+                continue;
+            }
+            if !after {
+                continue;
+            }
+            if m.sender_type == "user" {
+                break;
+            }
+            if m.sender_type == "bot" {
+                removing.push(m.id.clone());
+            }
+        }
+
+        for id in &removing {
+            self.conn
+                .execute("DELETE FROM messages WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+        }
+
+        let recalled = self
+            .get_message(message_id)?
+            .ok_or_else(|| "消息不存在".to_string())?;
+        Ok((recalled, removing))
+    }
+
+    pub fn get_user_profile(&self) -> Result<UserProfile, String> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT nickname, avatar FROM user_profile WHERE id = 1",
+                [],
+                |row| {
+                    Ok(UserProfile {
+                        nickname: row.get(0)?,
+                        avatar: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(row.unwrap_or(UserProfile {
+            nickname: "我".into(),
+            avatar: "#1e3a5f".into(),
+        }))
+    }
+
+    pub fn update_user_profile(&self, input: UpdateUserProfileInput) -> Result<UserProfile, String> {
+        let mut profile = self.get_user_profile()?;
+        if let Some(n) = input.nickname {
+            let n = n.trim().to_string();
+            if n.is_empty() {
+                return Err("昵称不能为空".into());
+            }
+            if n.chars().count() > 24 {
+                return Err("昵称太长".into());
+            }
+            profile.nickname = n;
+        }
+        if let Some(a) = input.avatar {
+            let a = a.trim().to_string();
+            if a.is_empty() {
+                return Err("头像不能为空".into());
+            }
+            profile.avatar = a;
+        }
+        self.conn
+            .execute(
+                "INSERT INTO user_profile (id, nickname, avatar) VALUES (1, ?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET nickname = excluded.nickname, avatar = excluded.avatar",
+                params![profile.nickname, profile.avatar],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(profile)
     }
 
     pub fn list_group_details(&self) -> Result<Vec<GroupDetail>, String> {

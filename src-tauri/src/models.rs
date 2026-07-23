@@ -38,6 +38,20 @@ pub struct Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UserProfile {
+    pub nickname: String,
+    pub avatar: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateUserProfileInput {
+    pub nickname: Option<String>,
+    pub avatar: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GroupDetail {
     #[serde(flatten)]
     pub group: Group,
@@ -95,4 +109,6 @@ pub struct ChatEvent {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed_ids: Option<Vec<String>>,
 }

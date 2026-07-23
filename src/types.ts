@@ -28,7 +28,7 @@ export interface Message {
   avatar?: string | null
   content: string
   createdAt: string
-  status?: 'streaming' | 'done' | 'error'
+  status?: 'streaming' | 'done' | 'error' | 'recalled'
 }
 
 export interface CursorStatus {
@@ -39,13 +39,9 @@ export interface CursorStatus {
   message: string
 }
 
-export const AVATAR_COLORS = [
-  '#0d9488',
-  '#0369a1',
-  '#b45309',
-  '#be123c',
-  '#4d7c0f',
-  '#6d28d9',
-  '#0f766e',
-  '#1e3a5f',
-]
+export interface UserProfile {
+  nickname: string
+  avatar: string
+}
+
+export { AVATAR_COLORS, randomAvatar } from './avatarGen'

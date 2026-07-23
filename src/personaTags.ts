@@ -116,6 +116,63 @@ export const PERSONA_TAG_GROUPS: PersonaTagGroup[] = [
     ],
   },
   {
+    key: 'language',
+    title: '输出语言',
+    exclusive: true,
+    tags: [
+      {
+        id: 'lang-zh',
+        label: '中文',
+        text: '请始终用简体中文回复，不要夹杂其他语言。',
+      },
+      {
+        id: 'lang-zh-tw',
+        label: '繁体中文',
+        text: '请始终用繁体中文回复。',
+      },
+      {
+        id: 'lang-yue',
+        label: '粤语',
+        text: '请始终用粤语口语风格回复（可用汉字书写）。',
+      },
+      {
+        id: 'lang-en',
+        label: '英语',
+        text: 'Always reply in English only. Do not use other languages.',
+      },
+      {
+        id: 'lang-ja',
+        label: '日语',
+        text: '必ず日本語だけで返信してください。他の言語は使わないでください。',
+      },
+      {
+        id: 'lang-ko',
+        label: '韩语',
+        text: '항상 한국어로만 답변하세요. 다른 언어는 사용하지 마세요.',
+      },
+      {
+        id: 'lang-fr',
+        label: '法语',
+        text: 'Réponds toujours uniquement en français.',
+      },
+      {
+        id: 'lang-de',
+        label: '德语',
+        text: 'Antworte bitte ausschließlich auf Deutsch.',
+      },
+      {
+        id: 'lang-es',
+        label: '西班牙语',
+        text: 'Responde siempre solo en español.',
+      },
+      {
+        id: 'lang-bilingual',
+        label: '中英双语',
+        text: '回复以中文为主，必要时可附简短英文；保持自然，不要整段逐句对照翻译。',
+      },
+    ],
+  },
+  {
     key: 'style',
     title: '说话风格',
     tags: [

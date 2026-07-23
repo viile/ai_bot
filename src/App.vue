@@ -11,11 +11,14 @@ import {
   fetchGroups,
   fetchMessages,
   fetchStatus,
+  fetchUserProfile,
+  recallMessage,
   sendMessage,
   updateBot,
+  updateUserProfile,
 } from './api'
 import { upsertMessage, useChatEvents } from './composables/useChatEvents'
-import type { CursorStatus, Group, Message } from './types'
+import type { CursorStatus, Group, Message, UserProfile } from './types'
 
 const groups = ref<Group[]>([])
 const activeId = ref<string | null>(null)
@@ -24,6 +27,7 @@ const showMembers = ref(false)
 const sending = ref(false)
 const status = ref<CursorStatus | null>(null)
 const loading = ref(true)
+const profile = ref<UserProfile | null>(null)
 
 const activeGroup = computed(() => groups.value.find((g) => g.id === activeId.value) || null)
 const activeBots = computed(() => activeGroup.value?.bots || [])
@@ -63,10 +67,22 @@ async function onCreateGroup(name: string) {
 }
 
 async function onRemoveGroup(id: string) {
-  if (!confirm('确定删除这个群及其消息、机器人？')) return
-  await deleteGroup(id)
-  if (activeId.value === id) activeId.value = null
-  await refreshGroups()
+  try {
+    await deleteGroup(id)
+    if (activeId.value === id) {
+      activeId.value = null
+      messages.value = []
+    }
+    await refreshGroups()
+  } catch (err) {
+    console.error(err)
+    status.value = {
+      available: status.value?.available ?? false,
+      loggedIn: status.value?.loggedIn ?? false,
+      binary: status.value?.binary ?? null,
+      message: err instanceof Error ? err.message : `删除群失败：${String(err)}`,
+    }
+  }
 }
 
 async function onSend(content: string) {
@@ -80,6 +96,42 @@ async function onSend(content: string) {
     setTimeout(() => {
       sending.value = false
     }, 300)
+  }
+}
+
+async function onRecall(messageId: string) {
+  if (!activeId.value) return
+  try {
+    await recallMessage(activeId.value, messageId)
+    sending.value = false
+  } catch (err) {
+    console.error(err)
+    status.value = {
+      available: status.value?.available ?? false,
+      loggedIn: status.value?.loggedIn ?? false,
+      binary: status.value?.binary ?? null,
+      message: err instanceof Error ? err.message : `撤回失败：${String(err)}`,
+    }
+  }
+}
+
+function removeMessagesByIds(ids: string[]) {
+  if (!ids.length) return
+  const set = new Set(ids)
+  messages.value = messages.value.filter((m) => !set.has(m.id))
+}
+
+async function onSaveProfile(data: { nickname: string; avatar: string }) {
+  try {
+    profile.value = await updateUserProfile(data)
+  } catch (err) {
+    console.error(err)
+    status.value = {
+      available: status.value?.available ?? false,
+      loggedIn: status.value?.loggedIn ?? false,
+      binary: status.value?.binary ?? null,
+      message: err instanceof Error ? err.message : `保存身份失败：${String(err)}`,
+    }
   }
 }
 
@@ -105,9 +157,18 @@ async function onUpdateBot(
 
 async function onRemoveBot(botId: string) {
   if (!activeId.value) return
-  if (!confirm('确定移除这个机器人？')) return
-  await deleteBot(activeId.value, botId)
-  await refreshGroups(activeId.value)
+  try {
+    await deleteBot(activeId.value, botId)
+    await refreshGroups(activeId.value)
+  } catch (err) {
+    console.error(err)
+    status.value = {
+      available: status.value?.available ?? false,
+      loggedIn: status.value?.loggedIn ?? false,
+      binary: status.value?.binary ?? null,
+      message: err instanceof Error ? err.message : `删除机器人失败：${String(err)}`,
+    }
+  }
 }
 
 function handleChatEvent(payload: Record<string, unknown>) {
@@ -120,6 +181,25 @@ function handleChatEvent(payload: Record<string, unknown>) {
   }
 
   if (!groupId || groupId !== activeId.value) return
+
+  if (type === 'message_recalled') {
+    const removed = (payload.removedIds as string[] | undefined) || []
+    removeMessagesByIds(removed)
+    // Also drop any in-flight typing bubbles.
+    messages.value = messages.value.filter((m) => m.status !== 'streaming')
+    if (payload.message) {
+      upsertMessage(messages.value, payload.message as Message)
+    }
+    sending.value = false
+    return
+  }
+
+  if (type === 'message_removed') {
+    const removed = (payload.removedIds as string[] | undefined) || []
+    const single = payload.messageId as string | undefined
+    removeMessagesByIds([...removed, ...(single ? [single] : [])])
+    return
+  }
 
   if (type === 'message' && payload.message) {
     upsertMessage(messages.value, payload.message as Message)
@@ -141,6 +221,7 @@ const { connected } = useChatEvents(handleChatEvent)
 onMounted(async () => {
   try {
     status.value = await fetchStatus()
+    profile.value = await fetchUserProfile()
     await refreshGroups()
   } catch (err) {
     status.value = {
@@ -163,9 +244,11 @@ onMounted(async () => {
       :connected="connected"
       :status-text="statusText"
       :status-ok="statusOk"
+      :profile="profile"
       @select="selectGroup"
       @create="onCreateGroup"
       @remove="onRemoveGroup"
+      @save-profile="onSaveProfile"
     />
 
     <main class="main">
@@ -181,10 +264,13 @@ onMounted(async () => {
         <ChatPanel
           :group-name="activeGroup.name"
           :messages="messages"
+          :bots="activeBots"
+          :user-nickname="profile?.nickname || '我'"
           :bot-count="activeBots.length"
           :sending="sending"
           :show-members="showMembers"
           @send="onSend"
+          @recall="onRecall"
           @toggle-members="showMembers = !showMembers"
         />
         <BotPanel

@@ -1,8 +1,21 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Bot, CursorStatus, Group, Message } from './types'
+import type { Bot, CursorStatus, Group, Message, UserProfile } from './types'
 
 export function fetchStatus() {
   return invoke<CursorStatus>('get_status')
+}
+
+export function fetchUserProfile() {
+  return invoke<UserProfile>('get_user_profile')
+}
+
+export function updateUserProfile(data: { nickname?: string; avatar?: string }) {
+  return invoke<UserProfile>('update_user_profile', {
+    input: {
+      nickname: data.nickname,
+      avatar: data.avatar,
+    },
+  })
 }
 
 export function fetchGroups() {
@@ -64,4 +77,8 @@ export function deleteBot(groupId: string, botId: string) {
 
 export function sendMessage(groupId: string, content: string) {
   return invoke<void>('send_message', { groupId, content })
+}
+
+export function recallMessage(groupId: string, messageId: string) {
+  return invoke<Message>('recall_message', { groupId, messageId })
 }

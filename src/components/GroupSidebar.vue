@@ -1,24 +1,43 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import type { Group } from '../types'
+import { ref, watch } from 'vue'
+import type { Group, UserProfile } from '../types'
+import { randomAvatar } from '../avatarGen'
 import AvatarBadge from './AvatarBadge.vue'
+import AvatarPicker from './AvatarPicker.vue'
 
-defineProps<{
+const props = defineProps<{
   groups: Group[]
   activeId: string | null
   connected: boolean
   statusText: string
   statusOk: boolean
+  profile: UserProfile | null
 }>()
 
 const emit = defineEmits<{
   select: [id: string]
   create: [name: string]
   remove: [id: string]
+  saveProfile: [data: { nickname: string; avatar: string }]
 }>()
 
 const draft = ref('')
 const creating = ref(false)
+/** Group id waiting for delete confirmation (Tauri has no reliable window.confirm). */
+const pendingDeleteId = ref<string | null>(null)
+const editingMe = ref(false)
+const meNick = ref('我')
+const meAvatar = ref(randomAvatar())
+
+watch(
+  () => props.profile,
+  (p) => {
+    if (!p) return
+    meNick.value = p.nickname
+    meAvatar.value = p.avatar
+  },
+  { immediate: true },
+)
 
 function submitCreate() {
   const name = draft.value.trim()
@@ -26,6 +45,35 @@ function submitCreate() {
   emit('create', name)
   draft.value = ''
   creating.value = false
+}
+
+function requestDelete(id: string) {
+  pendingDeleteId.value = id
+}
+
+function cancelDelete() {
+  pendingDeleteId.value = null
+}
+
+function confirmDelete() {
+  const id = pendingDeleteId.value
+  if (!id) return
+  pendingDeleteId.value = null
+  emit('remove', id)
+}
+
+function saveMe() {
+  const nickname = meNick.value.trim() || '我'
+  emit('saveProfile', { nickname, avatar: meAvatar.value })
+  editingMe.value = false
+}
+
+function cancelMe() {
+  if (props.profile) {
+    meNick.value = props.profile.nickname
+    meAvatar.value = props.profile.avatar
+  }
+  editingMe.value = false
 }
 </script>
 
@@ -36,6 +84,30 @@ function submitCreate() {
       <h1>多机器人协作</h1>
       <p class="brand-sub">同一条消息，同步给群里每一位角色</p>
     </header>
+
+    <div class="me-card">
+      <div class="me-row">
+        <AvatarBadge :name="meNick || '我'" :color-or-url="meAvatar" :size="36" />
+        <div class="me-meta">
+          <strong>{{ profile?.nickname || '我' }}</strong>
+          <span>你在群里的身份 · 机器人可 @你</span>
+        </div>
+        <button type="button" class="link-btn" @click="editingMe = !editingMe">
+          {{ editingMe ? '收起' : '设置' }}
+        </button>
+      </div>
+      <div v-if="editingMe" class="me-edit">
+        <label>
+          昵称
+          <input v-model="meNick" maxlength="24" placeholder="例如：阿凯" />
+        </label>
+        <AvatarPicker v-model="meAvatar" :name="meNick || '我'" />
+        <div class="me-actions">
+          <button type="button" class="ghost" @click="cancelMe">取消</button>
+          <button type="button" class="primary" @click="saveMe">保存</button>
+        </div>
+      </div>
+    </div>
 
     <div class="status" :class="{ ok: statusOk }">
       <span class="dot" />
@@ -80,11 +152,18 @@ function submitCreate() {
             <span>{{ (g.bots || []).length }} 个机器人</span>
           </div>
         </button>
+
+        <div v-if="pendingDeleteId === g.id" class="del-confirm" @click.stop>
+          <span>删除此群？</span>
+          <button type="button" class="danger" @click="confirmDelete">删除</button>
+          <button type="button" class="ghost" @click="cancelDelete">取消</button>
+        </div>
         <button
+          v-else
           type="button"
           class="del"
           title="删除群"
-          @click.stop="emit('remove', g.id)"
+          @click.stop="requestDelete(g.id)"
         >
           ×
         </button>
@@ -130,6 +209,86 @@ function submitCreate() {
   font-size: 0.85rem;
   color: var(--muted);
   line-height: 1.4;
+}
+
+.me-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.7rem 0.75rem;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.me-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.me-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.me-meta strong {
+  font-size: 0.92rem;
+}
+
+.me-meta span {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.me-edit {
+  margin-top: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+}
+
+.me-edit label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.me-edit input {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.45rem 0.6rem;
+  background: #fff;
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.me-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.me-actions .ghost {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.me-actions .primary {
+  border: 0;
+  border-radius: 8px;
+  padding: 0.35rem 0.7rem;
+  background: var(--teal);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.8rem;
 }
 
 .status {
@@ -180,6 +339,7 @@ function submitCreate() {
   color: var(--teal-deep);
   font-weight: 600;
   padding: 0;
+  font-size: 0.8rem;
 }
 
 .create-form {
@@ -293,10 +453,48 @@ function submitCreate() {
   line-height: 1;
   padding: 0.2rem 0.35rem;
   opacity: 0;
+  z-index: 1;
 }
 
-.group-list li:hover .del {
+.group-list li:hover .del,
+.del:focus-visible {
   opacity: 1;
+}
+
+.del-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  padding: 0 0.5rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(180, 35, 24, 0.2);
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+
+.del-confirm .danger {
+  border: 0;
+  border-radius: 8px;
+  padding: 0.3rem 0.55rem;
+  background: var(--danger);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+.del-confirm .ghost {
+  border: 0;
+  border-radius: 8px;
+  padding: 0.3rem 0.55rem;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.75rem;
 }
 
 .hint {

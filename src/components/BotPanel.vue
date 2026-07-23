@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import type { Bot } from '../types'
-import { AVATAR_COLORS } from '../types'
+import { randomAvatar } from '../avatarGen'
 import {
   PERSONA_TAG_GROUPS,
   composePersonaFromTags,
   type PersonaTag,
 } from '../personaTags'
 import AvatarBadge from './AvatarBadge.vue'
+import AvatarPicker from './AvatarPicker.vue'
 
 const props = defineProps<{
   bots: Bot[]
@@ -28,7 +29,7 @@ const editingId = ref<string | null>(null)
 const selectedTags = ref<Set<string>>(new Set())
 const form = reactive({
   nickname: '',
-  avatar: AVATAR_COLORS[0]!,
+  avatar: randomAvatar(),
   persona: '',
   model: '',
 })
@@ -37,7 +38,7 @@ function resetForm() {
   editingId.value = null
   selectedTags.value = new Set()
   form.nickname = ''
-  form.avatar = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)]!
+  form.avatar = randomAvatar()
   form.persona = ''
   form.model = ''
 }
@@ -103,21 +104,6 @@ function submit() {
   }
   resetForm()
 }
-
-function onFile(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  if (file.size > 800_000) {
-    alert('头像请小于 800KB')
-    return
-  }
-  const reader = new FileReader()
-  reader.onload = () => {
-    form.avatar = String(reader.result)
-  }
-  reader.readAsDataURL(file)
-}
 </script>
 
 <template>
@@ -150,25 +136,7 @@ function onFile(e: Event) {
         <input v-model="form.nickname" maxlength="24" placeholder="例如：产品经理小周" />
       </label>
 
-      <div class="avatar-field">
-        <span>头像</span>
-        <div class="swatches">
-          <button
-            v-for="c in AVATAR_COLORS"
-            :key="c"
-            type="button"
-            class="swatch"
-            :class="{ active: form.avatar === c }"
-            :style="{ background: c }"
-            @click="form.avatar = c"
-          />
-          <label class="upload">
-            上传
-            <input type="file" accept="image/*" hidden @change="onFile" />
-          </label>
-          <AvatarBadge :name="form.nickname || '机'" :color-or-url="form.avatar" :size="36" />
-        </div>
-      </div>
+      <AvatarPicker v-model="form.avatar" :name="form.nickname || '机'" />
 
       <div class="tag-block">
         <div class="tag-head">
@@ -349,6 +317,43 @@ textarea {
   background: #fff;
   font-weight: 400;
   color: var(--ink);
+}
+
+.avatar-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  padding: 0;
+}
+
+.swatch.active {
+  border-color: var(--ink);
+}
+
+.upload {
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .avatar-field {

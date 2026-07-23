@@ -2,12 +2,14 @@ mod cursor;
 mod models;
 mod orchestrator;
 mod store;
+mod turns;
 
-use models::{CreateBotInput, GroupDetail, Message, UpdateBotInput};
+use models::{CreateBotInput, GroupDetail, Message, UpdateBotInput, UpdateUserProfileInput};
 use store::{SharedStore, Store};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, State};
+use turns::TurnRegistry;
 
 fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     // Prefer project-local ./data in dev for easy inspection; fall back to app data.
@@ -120,14 +122,42 @@ fn delete_bot(
 }
 
 #[tauri::command]
+fn get_user_profile(store: State<'_, Arc<SharedStore>>) -> Result<models::UserProfile, String> {
+    let store = store.lock().map_err(|_| "存储锁定失败".to_string())?;
+    store.get_user_profile()
+}
+
+#[tauri::command]
+fn update_user_profile(
+    store: State<'_, Arc<SharedStore>>,
+    input: UpdateUserProfileInput,
+) -> Result<models::UserProfile, String> {
+    let store = store.lock().map_err(|_| "存储锁定失败".to_string())?;
+    store.update_user_profile(input)
+}
+
+#[tauri::command]
 async fn send_message(
     app: AppHandle,
     store: State<'_, Arc<SharedStore>>,
+    turns: State<'_, Arc<TurnRegistry>>,
     group_id: String,
     content: String,
 ) -> Result<(), String> {
     let store = Arc::clone(&store);
-    orchestrator::handle_user_message(app, store, group_id, content).await
+    let turns = Arc::clone(&turns);
+    orchestrator::handle_user_message(app, store, turns, group_id, content).await
+}
+
+#[tauri::command]
+fn recall_message(
+    app: AppHandle,
+    store: State<'_, Arc<SharedStore>>,
+    turns: State<'_, Arc<TurnRegistry>>,
+    group_id: String,
+    message_id: String,
+) -> Result<Message, String> {
+    orchestrator::recall_message(&app, &store, &turns, group_id, message_id)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -136,7 +166,9 @@ pub fn run() {
         .setup(|app| {
             let dir = data_dir(app.handle())?;
             let store = Arc::new(Mutex::new(Store::new(dir)?));
+            let turns = Arc::new(TurnRegistry::new());
             app.manage(store);
+            app.manage(turns);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -149,7 +181,10 @@ pub fn run() {
             create_bot,
             update_bot,
             delete_bot,
+            get_user_profile,
+            update_user_profile,
             send_message,
+            recall_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
