@@ -75,8 +75,12 @@ export function deleteBot(groupId: string, botId: string) {
   return invoke<void>('delete_bot', { groupId, botId })
 }
 
-export function sendMessage(groupId: string, content: string) {
-  return invoke<void>('send_message', { groupId, content })
+export function postUserMessage(groupId: string, content: string) {
+  return invoke<Message>('post_user_message', { groupId, content })
+}
+
+export function processPendingReplies(groupId: string) {
+  return invoke<void>('process_pending_replies', { groupId })
 }
 
 export function recallMessage(groupId: string, messageId: string) {

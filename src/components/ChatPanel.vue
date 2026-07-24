@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Bot, Message } from '../types'
 import AvatarBadge from './AvatarBadge.vue'
+import { EMOJI_GROUPS } from '../emojiData'
 import { insertMention, mentionDisplayNames, mentionQueryAt, splitMentions, everyoneMentionMatchesQuery, MENTION_EVERYONE_LABEL } from '../mentions'
 
 const props = defineProps<{
@@ -18,6 +19,7 @@ const emit = defineEmits<{
   send: [content: string]
   recall: [messageId: string]
   toggleMembers: []
+  composeActivity: []
 }>()
 
 const draft = ref('')
@@ -27,6 +29,13 @@ const mentionOpen = ref(false)
 const mentionStart = ref(0)
 const mentionQuery = ref('')
 const mentionIndex = ref(0)
+const emojiOpen = ref(false)
+const emojiGroupId = ref(EMOJI_GROUPS[0]!.id)
+const composerRoot = ref<HTMLElement | null>(null)
+
+const activeEmojiGroup = computed(
+  () => EMOJI_GROUPS.find((g) => g.id === emojiGroupId.value) || EMOJI_GROUPS[0]!,
+)
 
 const knownNames = computed(() =>
   mentionDisplayNames(
@@ -54,7 +63,7 @@ const mentionOptions = computed((): MentionOption[] => {
   return opts.slice(0, 10)
 })
 
-const canSend = computed(() => draft.value.trim().length > 0 && !props.sending)
+const canSend = computed(() => draft.value.trim().length > 0)
 
 async function scrollBottom() {
   await nextTick()
@@ -78,6 +87,15 @@ function partsFor(content: string) {
   return splitMentions(content, knownNames.value)
 }
 
+function notifyComposeActivity() {
+  emit('composeActivity')
+}
+
+function onDraftInput() {
+  notifyComposeActivity()
+  syncMentionFromCaret()
+}
+
 function syncMentionFromCaret() {
   const el = textareaRef.value
   if (!el) {
@@ -91,6 +109,7 @@ function syncMentionFromCaret() {
   }
   const queryChanged = !mentionOpen.value || hit.start !== mentionStart.value || hit.query !== mentionQuery.value
   mentionOpen.value = true
+  emojiOpen.value = false
   mentionStart.value = hit.start
   mentionQuery.value = hit.query
   // Only reset highlight when the @query itself changes — not on ArrowUp/Down keyup.
@@ -103,6 +122,7 @@ function applyMentionNickname(nickname: string) {
   const next = insertMention(draft.value, caret, mentionStart.value, nickname)
   draft.value = next.text
   mentionOpen.value = false
+  notifyComposeActivity()
   void nextTick(() => {
     if (!textareaRef.value) return
     textareaRef.value.focus()
@@ -118,15 +138,61 @@ function pickMentionOption(opt: MentionOption) {
   }
 }
 
+function insertAtCaret(chunk: string) {
+  const el = textareaRef.value
+  const start = el?.selectionStart ?? draft.value.length
+  const end = el?.selectionEnd ?? start
+  draft.value = draft.value.slice(0, start) + chunk + draft.value.slice(end)
+  const caret = start + chunk.length
+  notifyComposeActivity()
+  void nextTick(() => {
+    if (!textareaRef.value) return
+    textareaRef.value.focus()
+    textareaRef.value.setSelectionRange(caret, caret)
+    syncMentionFromCaret()
+  })
+}
+
+function toggleEmoji() {
+  emojiOpen.value = !emojiOpen.value
+  if (emojiOpen.value) mentionOpen.value = false
+}
+
+function pickEmoji(emoji: string) {
+  insertAtCaret(emoji)
+}
+
+function onDocPointerDown(e: PointerEvent) {
+  if (!emojiOpen.value) return
+  const root = composerRoot.value
+  if (root && e.target instanceof Node && root.contains(e.target)) return
+  emojiOpen.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocPointerDown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocPointerDown)
+})
+
 function submit() {
   if (!canSend.value) return
   const text = draft.value.trim()
   draft.value = ''
   mentionOpen.value = false
+  emojiOpen.value = false
   emit('send', text)
 }
 
 function onKeydown(e: KeyboardEvent) {
+  if (emojiOpen.value && e.key === 'Escape') {
+    e.preventDefault()
+    emojiOpen.value = false
+    return
+  }
+
   if (mentionOpen.value && mentionOptions.value.length) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
@@ -241,7 +307,7 @@ function onRecall(id: string) {
       </article>
     </div>
 
-    <form class="composer" @submit.prevent="submit">
+    <form ref="composerRoot" class="composer" @submit.prevent="submit">
       <div class="composer-field">
         <ul v-if="mentionOpen && mentionOptions.length" class="mention-menu" role="listbox">
           <li
@@ -262,16 +328,56 @@ function onRecall(id: string) {
             </template>
           </li>
         </ul>
-        <textarea
-          ref="textareaRef"
-          v-model="draft"
-          rows="2"
-          placeholder="输入消息，@ 点名或 @所有人；Enter 发送"
-          @keydown="onKeydown"
-          @input="syncMentionFromCaret"
-          @click="syncMentionFromCaret"
-          @keyup="syncMentionFromCaret"
-        />
+
+        <div v-if="emojiOpen" class="emoji-panel" role="dialog" aria-label="表情">
+          <div class="emoji-tabs">
+            <button
+              v-for="g in EMOJI_GROUPS"
+              :key="g.id"
+              type="button"
+              class="emoji-tab"
+              :class="{ on: emojiGroupId === g.id }"
+              @click="emojiGroupId = g.id"
+            >
+              {{ g.label }}
+            </button>
+          </div>
+          <div class="emoji-grid">
+            <button
+              v-for="(em, i) in activeEmojiGroup.emojis"
+              :key="`${activeEmojiGroup.id}-${i}`"
+              type="button"
+              class="emoji-cell"
+              :title="em"
+              @mousedown.prevent="pickEmoji(em)"
+            >
+              {{ em }}
+            </button>
+          </div>
+        </div>
+
+        <div class="composer-input">
+          <textarea
+            ref="textareaRef"
+            v-model="draft"
+            rows="2"
+            placeholder="输入消息，@ 点名或 @所有人；Enter 发送"
+            @keydown="onKeydown"
+            @input="onDraftInput"
+            @click="syncMentionFromCaret"
+            @keyup="syncMentionFromCaret"
+          />
+          <button
+            type="button"
+            class="emoji-toggle"
+            :class="{ on: emojiOpen }"
+            title="表情"
+            aria-label="表情"
+            @click="toggleEmoji"
+          >
+            😊
+          </button>
+        </div>
       </div>
       <button type="submit" :disabled="!canSend">发送</button>
     </form>
@@ -556,7 +662,7 @@ function onRecall(id: string) {
   resize: none;
   border: 1px solid var(--line);
   border-radius: 14px;
-  padding: 0.75rem 0.9rem;
+  padding: 0.75rem 2.6rem 0.75rem 0.9rem;
   background: #fff;
   outline: none;
   box-sizing: border-box;
@@ -565,6 +671,98 @@ function onRecall(id: string) {
 .composer textarea:focus {
   border-color: rgba(13, 148, 136, 0.5);
   box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
+}
+
+.composer-input {
+  position: relative;
+}
+
+.emoji-toggle {
+  position: absolute;
+  right: 0.45rem;
+  bottom: 0.4rem;
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 1.15rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.75;
+}
+
+.emoji-toggle:hover,
+.emoji-toggle.on {
+  opacity: 1;
+  background: rgba(13, 148, 136, 0.1);
+}
+
+.emoji-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 6;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 12px 28px rgba(20, 34, 31, 0.12);
+  padding: 0.45rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 260px;
+}
+
+.emoji-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.1rem 0.15rem;
+}
+
+.emoji-tab {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 0.28rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.emoji-tab.on {
+  background: rgba(13, 148, 136, 0.12);
+  color: var(--teal-deep);
+}
+
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 0.15rem;
+  overflow: auto;
+  padding: 0.1rem;
+  min-height: 0;
+}
+
+.emoji-cell {
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  aspect-ratio: 1;
+  font-size: 1.25rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.emoji-cell:hover {
+  background: rgba(13, 148, 136, 0.12);
 }
 
 .composer > button {

@@ -48,6 +48,17 @@ impl TurnRegistry {
         }
     }
 
+    /// Cancel any in-flight turn for this group (e.g. user kept sending).
+    pub fn cancel_group(&self, group_id: &str) {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(prev) = map.remove(group_id) {
+            prev.cancel.store(true, Ordering::SeqCst);
+            for h in prev.aborts {
+                h.abort();
+            }
+        }
+    }
+
     /// Cancel only if the active turn belongs to this user message.
     pub fn cancel_for_message(&self, group_id: &str, message_id: &str) -> bool {
         let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());

@@ -137,16 +137,28 @@ fn update_user_profile(
 }
 
 #[tauri::command]
-async fn send_message(
+async fn post_user_message(
     app: AppHandle,
     store: State<'_, Arc<SharedStore>>,
     turns: State<'_, Arc<TurnRegistry>>,
     group_id: String,
     content: String,
+) -> Result<Message, String> {
+    let store = Arc::clone(&store);
+    let turns = Arc::clone(&turns);
+    orchestrator::post_user_message(app, store, turns, group_id, content).await
+}
+
+#[tauri::command]
+async fn process_pending_replies(
+    app: AppHandle,
+    store: State<'_, Arc<SharedStore>>,
+    turns: State<'_, Arc<TurnRegistry>>,
+    group_id: String,
 ) -> Result<(), String> {
     let store = Arc::clone(&store);
     let turns = Arc::clone(&turns);
-    orchestrator::handle_user_message(app, store, turns, group_id, content).await
+    orchestrator::process_pending_replies(app, store, turns, group_id).await
 }
 
 #[tauri::command]
@@ -183,7 +195,8 @@ pub fn run() {
             delete_bot,
             get_user_profile,
             update_user_profile,
-            send_message,
+            post_user_message,
+            process_pending_replies,
             recall_message,
         ])
         .run(tauri::generate_context!())

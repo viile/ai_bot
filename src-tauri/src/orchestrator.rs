@@ -664,22 +664,25 @@ async fn run_crosstalk_rounds(
     }
 }
 
-pub async fn handle_user_message(
+pub async fn post_user_message(
     app: AppHandle,
     store: Arc<SharedStore>,
     turns: Arc<TurnRegistry>,
     group_id: String,
     content: String,
-) -> Result<(), String> {
+) -> Result<Message, String> {
     let text = content.trim().to_string();
     if text.is_empty() {
         return Err("消息不能为空".into());
     }
 
-    let (user_msg, bots, history_text, user_profile) = {
+    // New human messages interrupt any in-flight bot turn; replies restart after idle flush.
+    turns.cancel_group(&group_id);
+
+    let user_msg = {
         let store = store.lock().map_err(|_| "存储锁定失败".to_string())?;
         let profile = store.get_user_profile()?;
-        let user_msg = store.append_message(Message {
+        store.append_message(Message {
             id: Uuid::new_v4().to_string(),
             group_id: group_id.clone(),
             sender_type: "user".into(),
@@ -687,30 +690,18 @@ pub async fn handle_user_message(
             bot_id: None,
             nickname: profile.nickname.clone(),
             avatar: Some(profile.avatar.clone()),
-            content: text.clone(),
+            content: text,
             created_at: Utc::now().to_rfc3339(),
             status: "done".into(),
-        })?;
-
-        let bots = store.list_bots(Some(&group_id))?;
-        let history: Vec<Message> = store
-            .list_messages(&group_id, HISTORY_LIMIT + 1)?
-            .into_iter()
-            .filter(|m| m.id != user_msg.id)
-            .collect();
-        let history_text = format_history(&history);
-        (user_msg, bots, history_text, profile)
+        })?
     };
-
-    let user_message_id = user_msg.id.clone();
-    let cancel = turns.begin(&group_id, user_message_id.clone());
 
     emit_event(
         &app,
         ChatEvent {
             event_type: "message".into(),
-            group_id: Some(group_id.clone()),
-            message: Some(user_msg),
+            group_id: Some(group_id),
+            message: Some(user_msg.clone()),
             bot_id: None,
             message_id: None,
             delta: None,
@@ -720,6 +711,67 @@ pub async fn handle_user_message(
             removed_ids: None,
         },
     );
+
+    Ok(user_msg)
+}
+
+/// Trailing consecutive user messages after the last non-user bubble (batch to reply once).
+fn trailing_user_batch(messages: &[Message]) -> Vec<Message> {
+    let mut batch = Vec::new();
+    for m in messages.iter().rev() {
+        if m.sender_type == "user" && m.status != "recalled" {
+            batch.push(m.clone());
+        } else {
+            break;
+        }
+    }
+    batch.reverse();
+    batch
+}
+
+fn consolidate_user_batch(batch: &[Message]) -> String {
+    if batch.len() <= 1 {
+        return batch
+            .first()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+    }
+    batch
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// After the UI idle window: reply once to all trailing unprocessed user messages.
+pub async fn process_pending_replies(
+    app: AppHandle,
+    store: Arc<SharedStore>,
+    turns: Arc<TurnRegistry>,
+    group_id: String,
+) -> Result<(), String> {
+    let (batch, bots, history_text, user_profile) = {
+        let store = store.lock().map_err(|_| "存储锁定失败".to_string())?;
+        let msgs = store.list_messages(&group_id, HISTORY_LIMIT + 20)?;
+        let batch = trailing_user_batch(&msgs);
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let batch_ids: HashSet<String> = batch.iter().map(|m| m.id.clone()).collect();
+        let history: Vec<Message> = msgs.into_iter().filter(|m| !batch_ids.contains(&m.id)).collect();
+        let history_text = format_history(&history);
+        let bots = store.list_bots(Some(&group_id))?;
+        let user_profile = store.get_user_profile()?;
+        (batch, bots, history_text, user_profile)
+    };
+
+    let text = consolidate_user_batch(&batch);
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+
+    let user_message_id = batch.last().map(|m| m.id.clone()).unwrap_or_default();
+    let cancel = turns.begin(&group_id, user_message_id.clone());
 
     if bots.is_empty() {
         turns.finish(&group_id, &user_message_id);
@@ -731,7 +783,6 @@ pub async fn handle_user_message(
         return Ok(());
     }
 
-    // Route first (silent): decide who should speak based on context.
     let speakers = select_speakers(&bots, &history_text, &text).await;
     if cancelled(&cancel) {
         turns.finish(&group_id, &user_message_id);
@@ -783,7 +834,6 @@ pub async fn handle_user_message(
     }
 
     if !cancelled(&cancel) {
-        // Phase D: random other bots continue a short deep dialogue (sequential).
         run_crosstalk_rounds(
             app,
             store,

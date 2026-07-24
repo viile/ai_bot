@@ -12,8 +12,9 @@ import {
   fetchMessages,
   fetchStatus,
   fetchUserProfile,
+  postUserMessage,
+  processPendingReplies,
   recallMessage,
-  sendMessage,
   updateBot,
   updateUserProfile,
 } from './api'
@@ -28,6 +29,58 @@ const sending = ref(false)
 const status = ref<CursorStatus | null>(null)
 const loading = ref(true)
 const profile = ref<UserProfile | null>(null)
+
+/** Wait for send + compose idle before asking bots to reply to the batch. */
+const REPLY_IDLE_MS = 2000
+let replyFlushTimer: ReturnType<typeof setTimeout> | null = null
+let replyPending = false
+let replyProcessing = false
+
+function clearReplyFlushTimer() {
+  if (replyFlushTimer) {
+    clearTimeout(replyFlushTimer)
+    replyFlushTimer = null
+  }
+}
+
+function armReplyFlush() {
+  if (!replyPending || !activeId.value) return
+  clearReplyFlushTimer()
+  replyFlushTimer = setTimeout(() => {
+    void flushPendingReplies()
+  }, REPLY_IDLE_MS)
+}
+
+async function flushPendingReplies() {
+  replyFlushTimer = null
+  const groupId = activeId.value
+  if (!groupId || !replyPending || replyProcessing) return
+
+  replyPending = false
+  replyProcessing = true
+  sending.value = true
+  try {
+    await processPendingReplies(groupId)
+  } catch (err) {
+    console.error(err)
+    // Keep pending so a later idle can retry; also surface briefly.
+    replyPending = true
+    status.value = {
+      available: status.value?.available ?? false,
+      loggedIn: status.value?.loggedIn ?? false,
+      binary: status.value?.binary ?? null,
+      message: err instanceof Error ? err.message : `回复失败：${String(err)}`,
+    }
+  } finally {
+    replyProcessing = false
+    sending.value = false
+    if (replyPending) armReplyFlush()
+  }
+}
+
+function onComposeActivity() {
+  if (replyPending) armReplyFlush()
+}
 
 const activeGroup = computed(() => groups.value.find((g) => g.id === activeId.value) || null)
 const activeBots = computed(() => activeGroup.value?.bots || [])
@@ -49,6 +102,8 @@ async function refreshGroups(preferId?: string | null) {
 }
 
 async function selectGroup(id: string | null) {
+  clearReplyFlushTimer()
+  replyPending = false
   activeId.value = id
   showMembers.value = false
   messages.value = []
@@ -87,23 +142,25 @@ async function onRemoveGroup(id: string) {
 
 async function onSend(content: string) {
   if (!activeId.value) return
-  sending.value = true
   try {
-    await sendMessage(activeId.value, content)
+    const msg = await postUserMessage(activeId.value, content)
+    upsertMessage(messages.value, msg)
+    replyPending = true
+    armReplyFlush()
   } catch (err) {
     alert(err instanceof Error ? err.message : String(err))
-  } finally {
-    setTimeout(() => {
-      sending.value = false
-    }, 300)
   }
 }
 
 async function onRecall(messageId: string) {
   if (!activeId.value) return
   try {
+    clearReplyFlushTimer()
     await recallMessage(activeId.value, messageId)
     sending.value = false
+    // If more trailing user messages remain, wait for idle again.
+    replyPending = true
+    armReplyFlush()
   } catch (err) {
     console.error(err)
     status.value = {
@@ -271,6 +328,7 @@ onMounted(async () => {
           :show-members="showMembers"
           @send="onSend"
           @recall="onRecall"
+          @compose-activity="onComposeActivity"
           @toggle-members="showMembers = !showMembers"
         />
         <BotPanel
